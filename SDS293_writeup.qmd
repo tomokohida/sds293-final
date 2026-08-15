@@ -1,0 +1,666 @@
+---
+title: "Predicting Low and High Income ZIP Codes from Bacteria and Metal Contamination Data in Austin TX Watersheds"
+author: Cynthia Arguijo & Tomoko Hida
+format: 
+  pdf:
+    embed-resources: true
+editor: source
+bibliography: waterquality.bib
+csl: apa.csl
+---
+
+#### Introduction
+
+The current state of Austin’s water quality is a cause for concern, despite the city’s efforts to manage and protect its water resources (@Austin2024). This contamination includes fecal bacteria, often caused by Sewage spills, sewage overflows, and contaminated stormwater (@Hama_Aziz_2023). Fecal contamination in water bodies can increase risk of illness in humans through contact during recreational activities such as swimming and wading (@Porras_Kocian_2020), and heavy metals can cause harm to various organs, even at low exposure levels (@Hama_Aziz_2023). Studies have shown that socioeconomic disparities can be related to exposure to contaminated water (@Adelodun_2021). Using the Water Quality Sampling data set from the City of Austin Water Resources Monitoring database and the Austin Census data about median household income in 2015 and 2016, we aim to show the spatial correlation between bacterial water contamination and median income level.
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(stringr)
+library(tidyr)
+library(maps)
+library(tidygeocoder)
+library(caret)
+Water_Quality_Sampling_Data <- read_csv("Water_Quality_Sampling_Data.csv")
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+water_data <- Water_Quality_Sampling_Data |> mutate(SAMPLE_DATE = as.Date(SAMPLE_DATE, format = "%m/%d/%Y %I:%M:%S %p")) %>% mutate(YEAR = format(as.Date(SAMPLE_DATE), "%Y")) %>% mutate(MONTH = format(as.Date(SAMPLE_DATE), "%m")) %>% filter(YEAR > "2007", YEAR < "2020")
+```
+#### Data Description
+
+The Water Quality Sampling data contains the information for individual contaminant samples taken from watersheds in the Austin Texas area. Each observation includes information about the date, the latitude and longitude coordinates of the sample, the watershed that the location belongs to, the medium of water (surface water, groundwater, storm water, etc.), the parameter of contaminant that the water was sampled for, and the resulting quantity of the parameter that was measured.
+
+In order to pare down the 1,477,241 observations of the data that largely included water samples from the 1990s to the present year, we looked at a number of ways we could subset the data. 
+
+We first attempted to make training and testing sets by finding a set of three months that all took place in one season and combining the first and third month for training and using the second month as testing. Our first attempt in finding a good subset was the Spring in 2015, but the watersheds that were tested during May and March of 2015 only accounted for 6 of the 30 watersheds that were collectively tested in 2015, while 27 of those 30 watersheds were sampled in April. In order to establish a strong foundation from which to build our statistical learning model, it was necessary that we had sample consistency between the training and testing data. 
+
+Moving on to datasets of entire years as opposed to a set of months, we glanced at the data for 2014, 2015, and 2016, and found that there were very few autumn season observations for 2015 and 2016 while there were 1630 observations for November alone in 2014. We glanced at the data distribution over the months for each year to ensure that there was no month or set of months that were excluded in the annual data. We ultimately decided to use 2015 as our training data and 2016 as our test data upon seeing how irregular the sampling was in 2014 over the entire year.
+
+The data was filtered for samples from the years 2015 (training) and 2016 (testing), surface and groundwater, and the parameters of arsenic, cadmium, chromium, copper, iron, lead, lithium, nickel, zinc, E. coli bacteria, and total coliform bacteria. Then, we converted the MG/L metal samples into UG/L so that the results could be compared in the same unit. We used the reverse_geocode function from the tidygeocoder package to retrieve the zip code where a sample was taken from the latitude and longitude coordinates of each observation. 
+
+To supplement the zip code information with demographic information, we used US Census data from 2015 and 2016 for our training and testing data sets respectively. By filtering for Texas, ZIP data, 2015, 2016, and income information, we retrieved a csv that contained median household income for each zip code in our Water Quality Sampling data set with the exception of 8 zip codes. The excluded zip codes were 78667, 78680, 78691, 78712, 78763, 78767, as they did not have median household information in the training or test data frames. Reasoning for a lack of median household income for a zip code in which water testing occurred included a zip code belonging to the University of Texas, Austin, and not exclusively being a residential area with an associated household income. After subsetting the data set to include relevant zip codes and median household income data only, we used the left_join() function to combine our water sampling data with the income data by zip code. We created a training data set with the 2015 data which contained 28 zip codes, and used the 2016 data containing 37 zip codes as our test data set.
+
+The data that we reorganized to accommodate for our research question was organized by zip code, including information about each area’s demographics during their respective year and the testing of the following parameters: E coli, total coliform arsenic, cadmium, chromium, copper, iron, lead, lithium, nickel, zinc. The data contained variables for the total testing frequency at each zip code, whether or not each parameter was tested for, the median measurement of each parameter, the total number of households, and the median household income.
+
+
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+# training data and testing data
+# filter by medium to be only Ground Water and Surface Water
+# filter pounds units out
+# filter for only bacteria/pathogens and metals
+# filter for 2015 only in training, 2016 only in testing
+# filter out non-harmful metals in param
+training_water <- water_data |> filter(MEDIUM %in% c("Ground Water", "Surface Water"), UNIT != "Pounds (lbs)", PARAM_TYPE %in% c("Bacteria/Pathogens", "Metals"), YEAR =="2015", !(PARAMETER %in% c("ALUMINUM", "BARIUM", "BORON", "STRONTIUM")))
+# convert mg/l to ug/l to have all units in unison
+training_water$RESULT[training_water$UNIT == "MG/L"] <- training_water$RESULT[training_water$UNIT == "MG/L"] * 1000
+training_water$UNIT[training_water$UNIT == "MG/L"] <- "UG/L"
+
+
+testing_water <- water_data |> filter(MEDIUM %in% c("Ground Water", "Surface Water"), UNIT != "Pounds (lbs)", PARAM_TYPE %in% c("Bacteria/Pathogens", "Metals"), YEAR == "2016", !(PARAMETER %in% c("ALUMINUM", "BARIUM", "BORON", "STRONTIUM")))
+# convert mg/l to ug/l to have all units in unison
+testing_water$RESULT[testing_water$UNIT == "MG/L"] <- testing_water$RESULT[testing_water$UNIT == "MG/L"] * 1000
+testing_water$UNIT[testing_water$UNIT == "MG/L"] <- "UG/L"
+```
+
+
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+# training data zip
+# reverse geocode, add address column by using lat and lon
+training_water_zip <- training_water |>
+    reverse_geocode(lat = LAT_DD_WGS84, long = LON_DD_WGS84, address = addr, method = "osm")
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+# fixing addresses that do not contain a zip code
+
+# "Austin, Travis County, Texas, United States" all correspond to Walter E. Long Lake
+training_water_zip <- training_water_zip %>%
+  mutate(addr = ifelse(addr == "Austin, Travis County, Texas, United States",
+                       "Daffan Lane, Austin, Texas, 78724, United States",
+                       addr))
+# "FM 973 North, Travis County, Texas, United States" all correspond to Gilleland Creek
+training_water_zip <- training_water_zip %>%
+  mutate(addr = ifelse(addr == "FM 973 North, Travis County, Texas, United States",
+                       "FM 973 North, Travis County, Texas, 78763, United States",
+                       addr))
+# "Travis County, Texas, United States" all correspond to the same area of Barton Creek
+training_water_zip <- training_water_zip %>%
+  mutate(addr = ifelse(addr == "Travis County, Texas, United States",
+                       "Travis County, Texas, 78736, United States",
+                       addr))
+# "Webberville Road, Travis County, Texas, United States" all correspond to Gilleland Creek
+training_water_zip <- training_water_zip %>%
+  mutate(addr = ifelse(addr == "Webberville Road, Travis County, Texas, United States",
+                       "17322 Webberville Road, Travis County, Texas, 78653, United States",
+                       addr))
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+# identify where the missing address values are because of missing lat lon coordinates -> they are all in bear creek
+
+training_water_zip %>%
+  filter(is.na(addr)) %>%
+  pull(WATERSHED) %>%
+  unique()
+
+#replace NA for address of bear creek
+
+training_water_zip <- training_water_zip %>%
+  mutate(addr = ifelse(is.na(addr),
+                        "Bear Creek, Hays County, Texas, 78737, United States",
+                        addr))
+
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+# make a zip code column 
+
+training_water_zip <- training_water_zip %>%
+  mutate(ZIP = str_extract(addr, "\\b7\\d{4}\\b"))
+
+```
+
+
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+# testing data zip
+# reverse geocode, add address column by using lat and lon
+testing_water_zip <- testing_water |>
+    reverse_geocode(lat = LAT_DD_WGS84, long = LON_DD_WGS84, address = addr, method = "osm")
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+# identify where the missing address values for testing data are because of missing lat lon coordinates -> they are in bear creek and barton creek (specifically airman's cave)
+testing_water_zip %>%
+  filter(is.na(addr)) %>%
+  pull(WATERSHED) %>%
+  unique()
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+#replace NA for address of bear creek observations
+
+testing_water_zip <- testing_water_zip %>%
+  mutate(addr = ifelse(is.na(addr) & WATERSHED == "Bear Creek",
+                       "Bear Creek, Hays County, Texas, 78737, United States",
+                       addr))
+
+# replace NA for address of barton creek airman's cave
+
+testing_water_zip <- testing_water_zip %>%
+  mutate(addr = ifelse(is.na(addr) & WATERSHED == "Barton Creek",
+                       "Austin, Texas, 78704, United States",
+                       addr))
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+# fixing addresses that do not contain a zip code
+
+# "Austin, Travis County, Texas, United States" all correspond to Walter E. Long Lake
+testing_water_zip <- testing_water_zip %>%
+  mutate(addr = ifelse(addr == "Austin, Travis County, Texas, United States",
+                       "Daffan Lane, Austin, Texas, 78724, United States",
+                       addr))
+# "Cannonville, Howard Ranch, Hays County, Texas, United States" all correspond to Onion Creek
+testing_water_zip <- testing_water_zip %>%
+  mutate(addr = ifelse(addr == "Cannonville, Howard Ranch, Hays County, Texas, United States",
+                       "Hays County, Texas, 78619, United States",
+                       addr))
+# "Hays County, Texas, United States" correspond to two different parts of Onion Creek, but they both have zip code 78619
+testing_water_zip <- testing_water_zip %>%
+  mutate(addr = ifelse(addr == "Hays County, Texas, United States",
+                       "Hays County, Texas, 78619, United States",
+                       addr))
+# "McCafferty Road, Hays County, Texas, United States" corresponds to a part of onion creek
+testing_water_zip <- testing_water_zip %>%
+  mutate(addr = ifelse(addr == "McCafferty Road, Hays County, Texas, United States",
+                       "Hays County, Texas, 78620, United States",
+                       addr))
+# "Pursley Road, Hays County, Texas, United States" corresponds to a part of onion creek
+testing_water_zip <- testing_water_zip %>%
+  mutate(addr = ifelse(addr == "Pursley Road, Hays County, Texas, United States",
+                       "Pursley Road, Mount Sharp, Hays County, Texas, 78620, United States",
+                       addr))
+# "Ranch Road 12, Hays County, Texas, United States" corresponds to a part of onion creek
+testing_water_zip <- testing_water_zip %>%
+  mutate(addr = ifelse(addr == "Ranch Road 12, Hays County, Texas, United States",
+                       "Hays County, Texas, 78619, United States",
+                       addr))
+# "Ranch Road 150 West, Dripping Springs, Hays County, Texas, United States" corresponds to a part of onion creek
+testing_water_zip <- testing_water_zip %>%
+  mutate(addr = ifelse(addr == "Ranch Road 150 West, Dripping Springs, Hays County, Texas, United States",
+                       "Ranch Road 150 West, Hays County, Texas, 78619, United States",
+                       addr))
+# "Ranch to Market Road 967, Buda, Hays County, Texas, United States" corresponds to a little bear creek
+testing_water_zip <- testing_water_zip %>%
+  mutate(addr = ifelse(addr == "Ranch to Market Road 967, Buda, Hays County, Texas, United States",
+                       "Ranch to Market Road 967, Buda, Texas, 78610, United States",
+                       addr))
+# "Wylie Kuykendall Lane, Hays County, Texas, United States" corresponds to a part of onion creek
+testing_water_zip <- testing_water_zip %>%
+  mutate(addr = ifelse(addr == "Wylie Kuykendall Lane, Hays County, Texas, United States",
+                       "Wylie Kuykendall Lane, Hays County, Texas, 78667, United States",
+                       addr))
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+# make a zip code column 
+
+testing_water_zip <- testing_water_zip %>%
+  mutate(ZIP = str_extract(addr, "\\b7\\d{4}\\b"))
+
+```
+
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+#make into data for modelling :D
+training <- training_water_zip %>%
+  group_by(ZIP) %>%
+  summarise(
+    total_frequency = n(),
+    median_arsenic = median(RESULT[PARAMETER == "ARSENIC"], na.rm = TRUE),
+    median_cadmium = median(RESULT[PARAMETER == "CADMIUM"], na.rm = TRUE),
+    median_chromium = median(RESULT[PARAMETER == "CHROMIUM"], na.rm = TRUE),
+    median_copper = median(RESULT[PARAMETER == "COPPER"], na.rm = TRUE),
+    median_ecoli = median(RESULT[PARAMETER == "E COLI BACTERIA"], na.rm = TRUE),
+    median_iron = median(RESULT[PARAMETER == "IRON"], na.rm = TRUE),
+    median_lead = median(RESULT[PARAMETER == "LEAD"], na.rm = TRUE),
+    median_lithium = median(RESULT[PARAMETER == "LITHIUM"], na.rm = TRUE),
+    median_nickel = median(RESULT[PARAMETER == "NICKEL"], na.rm = TRUE),
+    median_coliform = median(RESULT[PARAMETER == "TOTAL COLIFORM BACTERIA"], na.rm = TRUE),
+    median_zinc = median(RESULT[PARAMETER == "ZINC"], na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+testing <- testing_water_zip %>%
+  group_by(ZIP) %>%
+  summarise(
+    total_frequency = n(),
+    median_arsenic = median(RESULT[PARAMETER == "ARSENIC"], na.rm = TRUE),
+    median_cadmium = median(RESULT[PARAMETER == "CADMIUM"], na.rm = TRUE),
+    median_chromium = median(RESULT[PARAMETER == "CHROMIUM"], na.rm = TRUE),
+    median_copper = median(RESULT[PARAMETER == "COPPER"], na.rm = TRUE),
+    median_ecoli = median(RESULT[PARAMETER == "E COLI BACTERIA"], na.rm = TRUE),
+    median_iron = median(RESULT[PARAMETER == "IRON"], na.rm = TRUE),
+    median_lead = median(RESULT[PARAMETER == "LEAD"], na.rm = TRUE),
+    median_lithium = median(RESULT[PARAMETER == "LITHIUM"], na.rm = TRUE),
+    median_nickel = median(RESULT[PARAMETER == "NICKEL"], na.rm = TRUE),
+    median_coliform = median(RESULT[PARAMETER == "TOTAL COLIFORM BACTERIA"], na.rm = TRUE),
+    median_zinc = median(RESULT[PARAMETER == "ZINC"], na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+#remove zip codes that don't have income and household data and zip codes that don't have e coli sampling
+testing <- testing |> filter(!(ZIP %in% c("78667", "78680", "78691", "78712", "78763", "78767", "78717", "78754")))
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+training <- training |> filter(!(ZIP %in% c("78667", "78680", "78691", "78712", "78763", "78767", "78717", "78754")))
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+zipcode <- read_csv("zipcode.csv")
+zipcode <- zipcode |>
+  select(zipcode, n_household_2015, median_income2015, n_household_2016, median_income2016) |>
+  filter(zipcode != 78667 & zipcode != 78680 & zipcode != 78691 & zipcode != 78712 & zipcode != 78763 & zipcode != 78767)
+
+zipcode2015 <- zipcode |>
+  select(zipcode, n_household_2015, median_income2015) |>
+  rename(ZIP = zipcode)
+  
+zipcode2016 <- zipcode |>
+  select(zipcode, n_household_2016, median_income2016) |>
+  rename(ZIP = zipcode)
+
+zipcode2015$lowincome <- ifelse(zipcode2015$median_income2015 < 55653, 1, 0)
+zipcode2016$lowincome <- ifelse(zipcode2015$median_income2015 < 59039, 1, 0)
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+testing$ZIP <- as.numeric(testing$ZIP)
+training$ZIP <- as.numeric(training$ZIP)
+zip_training <- left_join(training, zipcode2015, by = "ZIP")
+zip_testing <- left_join(testing, zipcode2016, by = "ZIP")
+```
+#### The Models
+
+In order to investigate the relationship between contamination in a water sample and the predominant income demographic in that area, we chose a multiple logistic regression. By using median household income in 2015 and 2016 from US census data, we ordered the list of otherwise non-ordinal zip codes associated with each watershed sample. The criteria of a zip code being classified as high or low income was dependent on whether it was less than or greater than the median household income for Texas in the respective year. In our 2015 training data, the median household income in Texas was 55,653 dollars [@Posey_2016] and 56,565 dollars for our 2015 testing data [@Guzman_2017], so zip codes with a median income below that threshold were classified as 1, low income, and zip codes above the threshold were classified as 0, high income. As such, we classified  11 zip codes as low income and 17 zip codes as high income in our training data, and 12 zip codes as low income and 25 zip codes as high income in the testing data.
+
+Our variable selection procedure was conditional on the statistical significance of variable coefficient estimates in the regression summary and the performance of our selected model on the test set (i.e., model accuracy). 
+
+In our first attempt to use all variables, the model failed to compile as there was an abundance of N/A values. After removing the terms (such as median_copper) that were tested for at a fraction of the total zip codes and were otherwise N/A values for all other watersheds, our first model iteration included only the total frequency and median e coli variables. We also removed 2 zip codes for which the median_ecoli variable was missing. The accuracy of this model was 51.35%.
+
+```{r, echo = FALSE, include = FALSE}
+#model 1
+set.seed(1)
+
+glm.fits <- glm(lowincome ~ total_frequency + median_ecoli, data = zip_training, family = binomial)
+summary(glm.fits)
+
+```
+
+```{r, echo = FALSE, include=FALSE}
+# Predict probabilities on the test set (zip_testing)
+predicted_probabilities <- predict(glm.fits, newdata = zip_testing, type = "response")
+
+# Convert probabilities to binary predictions: 1 if probability > 0.5, otherwise 0
+predicted_class <- ifelse(predicted_probabilities > 0.5, 1, 0)
+
+# Add predicted class as a new column to zip_testing
+zip_testing$predicted_lowincome <- predicted_class
+
+# View the predictions
+head(zip_testing[, c("lowincome", "predicted_lowincome")])  # Compare actual vs predicted
+table(Actual = zip_testing$lowincome, Predicted = zip_testing$predicted_lowincome)
+accuracy <- mean(zip_testing$lowincome == zip_testing$predicted_lowincome)
+```
+
+```{r, echo = FALSE}
+# Create confusion matrix
+confusion_matrix <- confusionMatrix(as.factor(zip_testing$predicted_lowincome), as.factor(zip_testing$lowincome))
+print(confusion_matrix)
+```
+
+$$logit\{{\pi}\} = \hat{\beta_0} + \hat{\beta_1}testingFrequency + \hat{\beta_2}medianEcoli$$
+
+In order to include more of the predictors we so carefully summarized into model-compatible values, we created an indicator variable for whether metal was tested for at a zipcode. We imagined that while most values for the median metal contaminant variable are N/A, that if we measured the main effect of whether a particular metal was tested on the likelihood of a zip code being low or high income, that we could then measure the change in main effect of specific metal contaminant if any one specific metal type had an associated sampled value. For example, if a watershed in zip code 30000 was tested for metal A and metal C but not for metal B, the corresponding metal testing indicator variable metalA_testing and metalC_testing would be 1, but metalB_testing would be 0. Having been tested for, metal A and metal C may have values 4UG/L and 6.33UG/L, but metal B would have an N/A value. As such, our second model iteration was as follows:
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+# model 2
+training2 <- training_water_zip %>%
+  group_by(ZIP) %>%
+  summarise(
+    total_frequency = n(),
+    median_ecoli = median(RESULT[PARAMETER == "E COLI BACTERIA"], na.rm = TRUE),
+    median_arsenic = median(RESULT[PARAMETER == "ARSENIC"], na.rm = TRUE),
+    median_cadmium = median(RESULT[PARAMETER == "CADMIUM"], na.rm = TRUE),
+    median_chromium = median(RESULT[PARAMETER == "CHROMIUM"], na.rm = TRUE),
+    median_copper = median(RESULT[PARAMETER == "COPPER"], na.rm = TRUE),
+    median_iron = median(RESULT[PARAMETER == "IRON"], na.rm = TRUE),
+    median_lead = median(RESULT[PARAMETER == "LEAD"], na.rm = TRUE),
+    median_lithium = median(RESULT[PARAMETER == "LITHIUM"], na.rm = TRUE),
+    median_nickel = median(RESULT[PARAMETER == "NICKEL"], na.rm = TRUE),
+    median_coliform = median(RESULT[PARAMETER == "TOTAL COLIFORM BACTERIA"], na.rm = TRUE),
+    median_zinc = median(RESULT[PARAMETER == "ZINC"], na.rm = TRUE),
+    metal_testing = as.integer(any(PARAM_TYPE == "Metals")),
+    arsenic_testing = as.integer(any(PARAMETER == "ARSENIC")),
+    cadmium_testing = as.integer(any(PARAMETER == "CADMIUM")),
+    chromium_testing = as.integer(any(PARAMETER == "CHROMIUM")),
+    copper_testing = as.integer(any(PARAMETER == "COPPER")),
+    iron_testing = as.integer(any(PARAMETER == "IRON")),
+    lead_testing = as.integer(any(PARAMETER == "LEAD")),
+    lithium_testing = as.integer(any(PARAMETER == "LITHIUM")),
+    nickel_testing = as.integer(any(PARAMETER == "NICKEL")),
+    zinc_testing = as.integer(any(PARAMETER == "ZINC")),
+    coliform_testing = as.integer(any(PARAMETER == "TOTAL COLIFORM BACTERIA")),
+    .groups = "drop"
+   )
+```
+
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+testing2 <- testing_water_zip %>%
+  group_by(ZIP) %>%
+  summarise(
+    total_frequency = n(),
+    median_ecoli = median(RESULT[PARAMETER == "E COLI BACTERIA"], na.rm = TRUE),
+    median_arsenic = median(RESULT[PARAMETER == "ARSENIC"], na.rm = TRUE),
+    median_cadmium = median(RESULT[PARAMETER == "CADMIUM"], na.rm = TRUE),
+    median_chromium = median(RESULT[PARAMETER == "CHROMIUM"], na.rm = TRUE),
+    median_copper = median(RESULT[PARAMETER == "COPPER"], na.rm = TRUE),
+    median_iron = median(RESULT[PARAMETER == "IRON"], na.rm = TRUE),
+    median_lead = median(RESULT[PARAMETER == "LEAD"], na.rm = TRUE),
+    median_lithium = median(RESULT[PARAMETER == "LITHIUM"], na.rm = TRUE),
+    median_nickel = median(RESULT[PARAMETER == "NICKEL"], na.rm = TRUE),
+    median_coliform = median(RESULT[PARAMETER == "TOTAL COLIFORM BACTERIA"], na.rm = TRUE),
+    median_zinc = median(RESULT[PARAMETER == "ZINC"], na.rm = TRUE),
+    metal_testing = as.integer(any(PARAM_TYPE == "Metals")),
+    arsenic_testing = as.integer(any(PARAMETER == "ARSENIC")),
+    cadmium_testing = as.integer(any(PARAMETER == "CADMIUM")),
+    chromium_testing = as.integer(any(PARAMETER == "CHROMIUM")),
+    copper_testing = as.integer(any(PARAMETER == "COPPER")),
+    iron_testing = as.integer(any(PARAMETER == "IRON")),
+    lead_testing = as.integer(any(PARAMETER == "LEAD")),
+    lithium_testing = as.integer(any(PARAMETER == "LITHIUM")),
+    nickel_testing = as.integer(any(PARAMETER == "NICKEL")),
+    zinc_testing = as.integer(any(PARAMETER == "ZINC")),
+    coliform_testing = as.integer(any(PARAMETER == "TOTAL COLIFORM BACTERIA")),
+    .groups = "drop"
+   )
+```
+
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+#remove zip codes that don't have income and household data and that dont have ecoli data
+testing2 <- testing2 |> filter(!(ZIP %in% c("78667", "78680", "78691", "78712", "78763", "78767", "78717", "78754")))
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+training2 <- training2 |> filter(!(ZIP %in% c("78667", "78680", "78691", "78712", "78763", "78767", "78717", "78754")))
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+testing2$ZIP <- as.numeric(testing2$ZIP)
+training2$ZIP <- as.numeric(training2$ZIP)
+zip_training2 <- left_join(training2, zipcode2015, by = "ZIP")
+zip_testing2 <- left_join(testing2, zipcode2016, by = "ZIP")
+```
+
+
+```{r, echo = FALSE, include = FALSE}
+set.seed(1)
+
+glm.fits2 <- glm(lowincome ~ total_frequency + median_ecoli + zinc_testing*median_zinc + lead_testing*median_lead + arsenic_testing*median_arsenic + cadmium_testing*median_cadmium + chromium_testing*median_chromium + copper_testing*median_copper + iron_testing*median_iron + nickel_testing*median_nickel, data = zip_training2, family = binomial)
+
+
+summary(glm.fits2)
+```
+
+
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+# Predict probabilities on the test set (zip_testing)
+predicted_probabilities <- predict(glm.fits2, newdata = zip_testing2, type = "response")
+
+summary(predicted_probabilities)
+
+# Convert probabilities to binary predictions: 1 if probability > 0.5, otherwise 0
+predicted_class <- ifelse(predicted_probabilities > 0.43, 1, 0)
+
+#what is the proportion of the high income to low income, can we think about specificity and sensitivity... use ROC curve
+
+library(pROC)
+model_roc <- roc(zip_testing2$lowincome, predicted_probabilities, quiet = TRUE)
+model_roc |> ggroc(legacy.axes = TRUE) + geom_abline(intercept = 0, slope = 1) + theme_bw(18)
+auc(model_roc)
+
+# if we want to finda. good cutoff, we want to find
+coords(model_roc, x = "best", best.method = "youden")
+#best cutoff is 0.43 and specificity = high income correct 52% of the time, and sensiticity = correct low income prediction
+
+
+# Add predicted class as a new column to zip_testing
+zip_testing2$predicted_lowincome <- predicted_class
+
+# View the predictions
+head(zip_testing2[, c("lowincome", "predicted_lowincome")])  # Compare actual vs predicted
+# Create confusion matrix
+table(Actual = zip_testing2$lowincome, Predicted = zip_testing2$predicted_lowincome)
+accuracy <- mean(zip_testing2$lowincome == zip_testing2$predicted_lowincome)
+```
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+confusion_matrix <- confusionMatrix(as.factor(zip_testing2$predicted_lowincome), as.factor(zip_testing2$lowincome))
+print(confusion_matrix)
+```
+
+$$logit\{{\pi}\} = \hat{\beta_0} + \hat{\beta_1}{testing\_frequency} + \hat{\beta_2}{median\_ecoli} + \hat{\beta_3}{zinc\_testing}*\hat{\beta_4}{median\_zinc}$$
+$$ + \hat{\beta_5}{lead\_testing}*\hat{\beta_6}{median\_lead} + \hat{\beta_7}{arsenic\_testing}*\hat{\beta_8}{median\_arsenic}
+$$
+$$
+ + \hat{\beta_9}{cadmium\_testing}*\hat{\beta}_{10}{median\_cadmium} + \hat{\beta}_{11}{chromium\_testing}*\hat{\beta}_{12}{median\_chromium}$$
+$$+\hat{\beta}_{13}{copper\_testing}*\hat{\beta}_{14}{median\_copper} + \hat{\beta}_{15}{iron\_testing}*\hat{\beta}_{16}{median\_iron}$$
+$$
++\hat{\beta}_{17}{nickel\_testing}*\hat{\beta}_{18}{median\_nickel}$$
+
+
+
+The accuracy of this second model was 0.6757, but the p-values for the model summary were N/A, as were all of the coefficient estimates themselves. Given that Rstudio has a tendency to remove rows with any N/A values as well, the processed model in the summary output removed 26 or so observations. We also found that the high accuracy rate was due to the model predicting high income every time, resulting in a model specificity (true failure) of 1 and sensitivity (true success) of 0. As 25 of the total zip codes were correctly classified as high income and 12 were incorrectly classified as high income, the accuracy being 67.57% makes sense as 2/3 of the observations indeed were high income zip codes. 
+
+Navigating this issue led us to our third and final model iteration. We changed the indicator variable from metalA_testing to metalA_missing, in which the indicator would be a 1 if there was an N/A value for median_metalA, and a 0 otherwise. We then changed all N/A values to 0, so that in the model, the indicator variable would allow the lack of sampling for a specific metal to contribute to the model, and if a specific metal was sampled for, the real retrieved value could contribute to the model as well. For example, if metalA was tested for in zip code 30000, metalA_missing would be 0,  and this would zero-out its associated coefficient estimate, while median_metalA would have an associated non-zero value and thus contribute to the model. Finally, we used forward selection to select the variables that explained our model best, based on AIC value. The forward selection algorithm selected the following variables: lead_missing, median_lead, and median_chromium. As such, our third model is as follows:
+
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+# model 3
+training3 <- training_water_zip %>%
+  group_by(ZIP) %>%
+  summarise(
+    total_frequency = n(),
+    median_ecoli = median(RESULT[PARAMETER == "E COLI BACTERIA"], na.rm = TRUE),
+    median_arsenic = median(RESULT[PARAMETER == "ARSENIC"], na.rm = TRUE),
+    median_cadmium = median(RESULT[PARAMETER == "CADMIUM"], na.rm = TRUE),
+    median_chromium = median(RESULT[PARAMETER == "CHROMIUM"], na.rm = TRUE),
+    median_copper = median(RESULT[PARAMETER == "COPPER"], na.rm = TRUE),
+    median_iron = median(RESULT[PARAMETER == "IRON"], na.rm = TRUE),
+    median_lead = median(RESULT[PARAMETER == "LEAD"], na.rm = TRUE),
+    median_lithium = median(RESULT[PARAMETER == "LITHIUM"], na.rm = TRUE),
+    median_nickel = median(RESULT[PARAMETER == "NICKEL"], na.rm = TRUE),
+    median_coliform = median(RESULT[PARAMETER == "TOTAL COLIFORM BACTERIA"], na.rm = TRUE),
+    median_zinc = median(RESULT[PARAMETER == "ZINC"], na.rm = TRUE),
+    metal_missing = as.integer(!any(PARAM_TYPE == "Metals")),
+    arsenic_missing = as.integer(!any(PARAMETER == "ARSENIC")),
+    cadmium_missing = as.integer(!any(PARAMETER == "CADMIUM")),
+    chromium_missing = as.integer(!any(PARAMETER == "CHROMIUM")),
+    copper_missing = as.integer(!any(PARAMETER == "COPPER")),
+    iron_missing = as.integer(!any(PARAMETER == "IRON")),
+    lead_missing = as.integer(!any(PARAMETER == "LEAD")),
+    lithium_missing = as.integer(!any(PARAMETER == "LITHIUM")),
+    nickel_missing = as.integer(!any(PARAMETER == "NICKEL")),
+    zinc_missing = as.integer(!any(PARAMETER == "ZINC")),
+    coliform_missing = as.integer(!any(PARAMETER == "TOTAL COLIFORM BACTERIA")),
+    .groups = "drop"
+   )
+```
+
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+testing3 <- testing_water_zip %>%
+  group_by(ZIP) %>%
+  summarise(
+    total_frequency = n(),
+    median_ecoli = median(RESULT[PARAMETER == "E COLI BACTERIA"], na.rm = TRUE),
+    median_arsenic = median(RESULT[PARAMETER == "ARSENIC"], na.rm = TRUE),
+    median_cadmium = median(RESULT[PARAMETER == "CADMIUM"], na.rm = TRUE),
+    median_chromium = median(RESULT[PARAMETER == "CHROMIUM"], na.rm = TRUE),
+    median_copper = median(RESULT[PARAMETER == "COPPER"], na.rm = TRUE),
+    median_iron = median(RESULT[PARAMETER == "IRON"], na.rm = TRUE),
+    median_lead = median(RESULT[PARAMETER == "LEAD"], na.rm = TRUE),
+    median_lithium = median(RESULT[PARAMETER == "LITHIUM"], na.rm = TRUE),
+    median_nickel = median(RESULT[PARAMETER == "NICKEL"], na.rm = TRUE),
+    median_coliform = median(RESULT[PARAMETER == "TOTAL COLIFORM BACTERIA"], na.rm = TRUE),
+    median_zinc = median(RESULT[PARAMETER == "ZINC"], na.rm = TRUE),
+    metal_testing = as.integer(any(PARAM_TYPE == "Metals")),
+    arsenic_missing = as.integer(!any(PARAMETER == "ARSENIC")),
+    cadmium_missing = as.integer(!any(PARAMETER == "CADMIUM")),
+    chromium_missing = as.integer(!any(PARAMETER == "CHROMIUM")),
+    copper_missing = as.integer(!any(PARAMETER == "COPPER")),
+    iron_missing = as.integer(!any(PARAMETER == "IRON")),
+    lead_missing = as.integer(!any(PARAMETER == "LEAD")),
+    lithium_missing = as.integer(!any(PARAMETER == "LITHIUM")),
+    nickel_missing = as.integer(!any(PARAMETER == "NICKEL")),
+    zinc_missing = as.integer(!any(PARAMETER == "ZINC")),
+    coliform_missing = as.integer(!any(PARAMETER == "TOTAL COLIFORM BACTERIA")),
+    .groups = "drop"
+  )
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+testing3 <- testing3 |> filter(!(ZIP %in% c("78667", "78680", "78691", "78712", "78763", "78767", "78717", "78754")))
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+training3 <- training3 |> filter(!(ZIP %in% c("78667", "78680", "78691", "78712", "78763", "78767", "78717", "78754")))
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+testing3$ZIP <- as.numeric(testing3$ZIP)
+training3$ZIP <- as.numeric(training3$ZIP)
+zip_training3 <- left_join(training3, zipcode2015, by = "ZIP")
+zip_testing3 <- left_join(testing3, zipcode2016, by = "ZIP")
+```
+
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+zip_testing3$median_zinc[is.na(zip_testing3$median_zinc)] <- 0
+summary(zip_testing3$median_zinc, useNA = "always")
+zip_testing3$median_lead[is.na(zip_testing3$median_lead)] <- 0
+summary(zip_testing3$median_lead, useNA = "always")
+zip_testing3$median_arsenic[is.na(zip_testing3$median_arsenic)] <- 0
+summary(zip_testing3$median_arsenic, useNA = "always")
+zip_testing3$median_cadmium[is.na(zip_testing3$median_cadmium)] <- 0
+summary(zip_testing3$median_cadmium, useNA = "always")
+zip_testing3$median_chromium[is.na(zip_testing3$median_chromium)] <- 0
+summary(zip_testing3$median_chromium, useNA = "always")
+zip_testing3$median_copper[is.na(zip_testing3$median_copper)] <- 0
+summary(zip_testing3$median_copper, useNA = "always")
+zip_testing3$median_iron[is.na(zip_testing3$median_iron)] <- 0
+summary(zip_testing3$median_iron, useNA = "always")
+zip_testing3$median_nickel[is.na(zip_testing3$median_nickel)] <- 0
+summary(zip_testing3$median_nickel, useNA = "always")
+
+#after missing sample columns were set to 0 or 1
+# when there was previously an NA, there will instead be a 0.
+
+zip_training3[is.na(zip_training3)] <- 0
+zip_testing3[is.na(zip_testing3)] <- 0
+
+```
+$$logit\{{\pi}\} = \hat{\beta_0} + \hat{\beta_1}lead\_missing + \hat{\beta_2}median\_lead + \hat{\beta_3}median\_chromium$$
+```{r, include = FALSE, echo = FALSE, warning = FALSE, message = FALSE}
+library(MASS)
+# Fit the full model 
+full.model <- glm(lowincome ~ total_frequency + median_ecoli + zinc_missing + median_zinc + lead_missing + median_lead + arsenic_missing + median_arsenic + cadmium_missing + median_cadmium + chromium_missing + median_chromium + copper_missing + median_copper + iron_missing + median_iron + nickel_missing + median_nickel, data = zip_training3, family = binomial)
+# Stepwise regression model
+step.model <- stepAIC(full.model, direction = "both", 
+                      trace = FALSE)
+summary(step.model)
+```
+
+```{r, echo = FALSE, include = FALSE, warning = FALSE, message = FALSE}
+set.seed(1)
+
+glm.fits3 <- glm(lowincome ~ lead_missing + median_lead + median_chromium, data = zip_training3, family = binomial)
+
+
+
+# take out cadmium and lithium, arsenic, iron
+
+summary(glm.fits3)
+
+# Predict probabilities on the test set (zip_testing)
+predicted_probabilities <- predict(glm.fits3, newdata = zip_testing3, type = "response")
+
+summary(predicted_probabilities)
+
+# Convert probabilities to binary predictions: 1 if probability > 0.5, otherwise 0
+predicted_class <- ifelse(predicted_probabilities > 0.1542737, 1, 0)
+
+#what is the proportion of the high income to low income, can we think about specificity and sensitivity... use ROC curve
+
+
+# Add predicted class as a new column to zip_testing
+zip_testing3$predicted_lowincome <- predicted_class
+
+# View the predictions
+head(zip_testing3[, c("lowincome", "predicted_lowincome")])  # Compare actual vs predicted
+# Create confusion matrix
+table(Actual = zip_testing3$lowincome, Predicted = zip_testing3$predicted_lowincome)
+accuracy <- mean(zip_testing3$lowincome == zip_testing3$predicted_lowincome)
+```
+
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+
+confusion_matrix <- confusionMatrix(as.factor(zip_testing3$predicted_lowincome), as.factor(zip_testing3$lowincome))
+print(confusion_matrix)
+
+
+library(pROC)
+model_roc <- roc(zip_testing3$lowincome, predicted_probabilities, quiet = TRUE)
+model_roc |> ggroc(legacy.axes = TRUE) + geom_abline(intercept = 0, slope = 1) + theme_bw(18)
+auc(model_roc)
+
+# if we want to finda. good cutoff, we want to find
+coords(model_roc, x = "best", best.method = "youden")
+#best cutoff is 0.43 and specificity = high income correct 52% of the time, and sensiticity = correct low income prediction
+
+
+```
+
+This model had an accuracy of 51.35%, which is the same accuracy as our very first iteration, but with a new threshold of 0.43 for classifying predicted probabilities as 1. This threshold was calculated with the coords() function using a ROC curve from the pROC library that plotted the predicted probabilities against the real testing data outcomes. The AUC for this model was 0.5333, still better than random guessing.
+
+#### Results
+
+Our final model was not appropriate for estimating whether zip codes were high or low income based on water contaminants. It performed only 1.35% better than random guessing, and did not account for covariance between variables. This final model tells us that the three variables of (1.) lead_missing: whether the watershed(s) in a given zip code were tested for lead or not, (2.) median_lead: the median value of lead if tested, and (3.) median_chromium: the median amount of chromium if tested altogether contributed the most to explaining whether a zip code was predicted to be low or high income. Lead contamination as a strong indicator of a low or high income zip code seems intuitive, but why e coli measurements are excluded from this model is concerning—one would imagine that e coli contamination in a zip code would indicate poor sewage maintenance and thus a less wealthy area. We also hoped to see a stronger correlation between testing frequency and the probability of a zip code being low or high income, but found that this variable too was deemed insignificant by forward selection. Instead, our third most valuable variable in explaining the likelihood of a zip code being low or high income is the value of chromium, if sampling for it occurred. Frankly, our model needs much improvement to be more relevant to our research question. It is important to note that we excluded all demographic information except for household income as well, which could have been an important context for our data selection and modeling process to include. 
+
+#### Discussion
+
+Considering that it was beyond the capacity of this project to iterate on our model further, if we had more time, we would have liked to explore the relationships between the contaminant variables themselves and look into what bacteria contamination variables could have contributed to the model. While we resorted to forward selection by AIC in our third model, we would feel more confident in this model iteration had we compared forward/backward/mixed selection models based on BIC, $C_p$, $R^2$, or AUC. Had we worked with best subset selection, we may have found an entirely different model.
+
+Our shortcomings mainly lay with our inexperience working with large amounts of missing data. There were more N/A values than real numerical values in all contaminant sampling data despite our careful selection of our training and testing data subsets. The decision to work with a multiple logistic regression model too could be reworked. Examining the performance of a ridge regression or PLS model would have been fruitful too, considering how correlated some contaminants would be in a highly contaminated zip code.
+
+Seeing as our model prediction accuracy for low income zip codes was only 51.35%, it is very likely that inequalities regarding water quality correspond more closely to other demographics within a zip code. If given the opportunity to revisit this project, we would be interested in building similar models that use the water sampling data to predict the racial demographics, political party affiliation, or sewage infrastructure quality of each zip code. We would be curious to see if political party affiliation is correlated with the usage of fossil fuels in an area, and whether contaminants in the water have an impact on populations’ political alignments.
+
+#### Conclusion
+
+The simplicity of our research question helped us to focus our data selection, modeling, and analysis quite aggressively—we did not hesitate to include or exclude specific observations. However, our lack of versatility with regards to the research question as we found variables to be insignificant or irrelevant did not serve us well, and the lack of consideration for other modeling techniques earlier on stopped us from considering important variable characteristics such as covariance. It was nonetheless informative work so thoroughly with two data sets of 30 or so observations each, as we made our first statistical learning model with an intermediate repertoire of statistical knowledge and a strong desire to learn. This analysis was a fantastic etude in applying our machine learning knowledge and seeing what tools and techniques we have yet to encounter.
+
+\newpage
+
+#### Bibliography

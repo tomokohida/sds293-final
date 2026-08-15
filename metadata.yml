@@ -1,0 +1,14 @@
+---
+:id: 331968300
+:submitters:
+- :name: Cynthia Arguijo
+  :email: carguijo@smith.edu
+- :name: Tomoko Hida
+  :email: thida@smith.edu
+:created_at: !ruby/object:ActiveSupport::TimeWithZone
+  utc: 2025-05-08 01:41:07.294709000 Z
+  zone: !ruby/object:ActiveSupport::TimeZone
+    name: America/Los_Angeles
+  time: 2025-05-07 18:41:07.294709000 Z
+:status: processed
+:score: 1.0
